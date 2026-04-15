@@ -3,102 +3,74 @@
 #include <string>
 #include <fstream>
 #include <sstream>
-#include <algorithm>
 
-// 1. 基礎結構
+// 定義頂點結構
 struct Vec3f { float x, y, z; };
-struct Color { unsigned char r, g, b; };
 
-// 2. 模型讀取器 (讀取 .obj 檔案)
 class Model {
-private:
+public:
     std::vector<Vec3f> verts_;
     std::vector<std::vector<int>> faces_;
-public:
+
     Model(const char* filename) {
-        std::ifstream in(filename, std::ifstream::in);
+        std::ifstream in(filename);
         if (in.fail()) {
-            std::cerr << "錯誤：找不到模型檔案 " << filename << std::endl;
-            return;
+            std::cout << "找不到檔案: " << filename << "，正在嘗試自動建立..." << std::endl;
+            create_test_cube(filename);
+            in.open(filename);
         }
         std::string line;
         while (std::getline(in, line)) {
-            std::istringstream iss(line);
-            char trash;
             if (!line.compare(0, 2, "v ")) {
-                iss >> trash; Vec3f v;
-                iss >> v.x >> v.y >> v.z;
+                std::istringstream s(line.substr(2));
+                Vec3f v; s >> v.x >> v.y >> v.z;
                 verts_.push_back(v);
             }
             else if (!line.compare(0, 2, "f ")) {
-                std::vector<int> f; int idx, tmp;
-                iss >> trash;
-                while (iss >> idx >> trash >> tmp >> trash >> tmp) {
-                    f.push_back(--idx); // .obj 是 1-based，轉為 0-based
+                std::vector<int> f;
+                int idx;
+                std::istringstream s(line.substr(2));
+                while (s >> idx) {
+                    f.push_back(--idx); // .obj 索引從 1 開始，轉為從 0 開始
                 }
                 faces_.push_back(f);
             }
         }
-        std::cout << "模型讀取成功，面數：" << faces_.size() << std::endl;
     }
-    int nfaces() { return (int)faces_.size(); }
-    Vec3f vert(int i) { return verts_[i]; }
-    std::vector<int> face(int i) { return faces_[i]; }
+
+    // 如果沒檔案，自動生一個方塊給它讀
+    void create_test_cube(const char* filename) {
+        std::ofstream out(filename);
+        out << "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\nv 0 0 1\nv 1 0 1\nv 1 1 1\nv 0 1 1\n"
+            << "f 1 2 3\nf 1 3 4\nf 5 6 7\nf 5 7 8\nf 1 2 6\nf 1 6 5\nf 2 3 7\nf 2 7 6\n"
+            << "f 3 4 8\nf 3 8 7\nf 4 1 5\nf 4 5 8\n";
+        out.close();
+    }
 };
 
-// 3. 重心座標 (計算點是否在三角形內)
-void barycentric(Vec3f a, Vec3f b, Vec3f c, Vec3f p, float& u, float& v, float& w) {
-    float det = (b.y - c.y) * (a.x - c.x) + (c.x - b.x) * (a.y - c.y);
-    if (std::abs(det) < 1e-5) { u = v = w = -1; return; } // 防止除以 0
-    u = ((b.y - c.y) * (p.x - c.x) + (c.x - b.x) * (p.y - c.y)) / det;
-    v = ((c.y - a.y) * (p.x - c.x) + (a.x - c.x) * (p.y - c.y)) / det;
-    w = 1.0f - u - v;
-}
-
 int main() {
-    const int width = 800;
-    const int height = 800;
-    std::vector<unsigned char> frameBuffer(width * height * 3, 20); // 暗灰色背景
-    std::vector<float> depthBuffer(width * height, -1e10); // 深度緩衝
+    // 1. 讀取模型
+    Model m("cube.obj");
 
-    // !!! 注意：這行會去讀取資料夾下的 cube.obj !!!
-    Model* model = new Model("cube.obj");
+    // 2. 檢查結果
+    if (m.verts_.empty()) {
+        std::cout << "讀取失敗！" << std::endl;
+    }
+    else {
+        std::cout << "--- 3D 模型讀取成功 ---" << std::endl;
+        std::cout << "頂點數量: " << m.verts_.size() << std::endl;
+        std::cout << "面數量: " << m.faces_.size() << std::endl;
+        std::cout << "-----------------------" << std::endl;
 
-    for (int i = 0; i < model->nfaces(); i++) {
-        std::vector<int> face = model->face(i);
-        Vec3f pts[3];
-        for (int j = 0; j < 3; j++) {
-            Vec3f v = model->vert(face[j]);
-            // 投影：把模型 (-1~1) 縮放到螢幕中心 (0~800)
-            pts[j] = { (v.x + 1.f) * width / 2.f, (v.y + 1.f) * height / 2.f, v.z };
-        }
-
-        // 畫三角形 (Bounding Box 掃描)
-        int minX = std::max(0, (int)std::min({ pts[0].x, pts[1].x, pts[2].x }));
-        int maxX = std::min(width - 1, (int)std::max({ pts[0].x, pts[1].x, pts[2].x }));
-        int minY = std::max(0, (int)std::min({ pts[0].y, pts[1].y, pts[2].y }));
-        int maxY = std::min(height - 1, (int)std::max({ pts[0].y, pts[1].y, pts[2].y }));
-
-        for (int y = minY; y <= maxY; y++) {
-            for (int x = minX; x <= maxX; x++) {
-                float u, v, w;
-                barycentric(pts[0], pts[1], pts[2], { (float)x, (float)y, 0 }, u, v, w);
-                if (u >= 0 && v >= 0 && w >= 0) {
-                    float z = pts[0].z * u + pts[1].z * v + pts[2].z * w;
-                    if (depthBuffer[y * width + x] < z) {
-                        depthBuffer[y * width + x] = z;
-                        int idx = (y * width + x) * 3;
-                        // 畫成白色
-                        frameBuffer[idx] = 255; frameBuffer[idx + 1] = 255; frameBuffer[idx + 2] = 255;
-                    }
-                }
-            }
+        // 印出第一個面做測試
+        if (!m.faces_.empty()) {
+            std::cout << "第一個面的頂點索引為: ";
+            for (int i : m.faces_[0]) std::cout << i << " ";
+            std::cout << std::endl;
         }
     }
 
-    std::ofstream ofs("output.ppm", std::ios::binary);
-    ofs << "P6\n" << width << " " << height << "\n255\n";
-    ofs.write((char*)frameBuffer.data(), frameBuffer.size());
-    std::cout << "渲染完成！請查看 output.ppm" << std::endl;
+    std::cout << "\n按 Enter 鍵結束..." << std::endl;
+    std::cin.get();
     return 0;
 }
