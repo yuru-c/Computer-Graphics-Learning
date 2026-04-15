@@ -3,21 +3,23 @@
 #include <string>
 #include <fstream>
 #include <sstream>
+#include <algorithm>
+#include <cmath> // 為了 cos 和 sin
 
-// 定義頂點結構
-struct Vec3f { float x, y, z; };
+// --- 3D 數學結構 ---
+struct Vec3f {
+    float x, y, z;
+};
 
+// --- 模型讀取類別 ---
 class Model {
 public:
     std::vector<Vec3f> verts_;
-    std::vector<std::vector<int>> faces_;
-
-    Model(const char* filename) {
-        std::ifstream in(filename);
+    Model(std::string filename) {
+        std::ifstream in(filename.c_str());
         if (in.fail()) {
-            std::cout << "找不到檔案: " << filename << "，正在嘗試自動建立..." << std::endl;
             create_test_cube(filename);
-            in.open(filename);
+            in.open(filename.c_str());
         }
         std::string line;
         while (std::getline(in, line)) {
@@ -26,51 +28,70 @@ public:
                 Vec3f v; s >> v.x >> v.y >> v.z;
                 verts_.push_back(v);
             }
-            else if (!line.compare(0, 2, "f ")) {
-                std::vector<int> f;
-                int idx;
-                std::istringstream s(line.substr(2));
-                while (s >> idx) {
-                    f.push_back(--idx); // .obj 索引從 1 開始，轉為從 0 開始
-                }
-                faces_.push_back(f);
-            }
         }
     }
-
-    // 如果沒檔案，自動生一個方塊給它讀
-    void create_test_cube(const char* filename) {
-        std::ofstream out(filename);
-        out << "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\nv 0 0 1\nv 1 0 1\nv 1 1 1\nv 0 1 1\n"
-            << "f 1 2 3\nf 1 3 4\nf 5 6 7\nf 5 7 8\nf 1 2 6\nf 1 6 5\nf 2 3 7\nf 2 7 6\n"
-            << "f 3 4 8\nf 3 8 7\nf 4 1 5\nf 4 5 8\n";
+    void create_test_cube(std::string filename) {
+        std::ofstream out(filename.c_str());
+        out << "v -0.5 -0.5 0.5\nv 0.5 -0.5 0.5\nv 0.5 0.5 0.5\nv -0.5 0.5 0.5\n"
+            << "v -0.5 -0.5 -0.5\nv 0.5 -0.5 -0.5\nv 0.5 0.5 -0.5\nv -0.5 0.5 -0.5\n";
         out.close();
     }
 };
 
 int main() {
-    // 1. 讀取模型
-    Model m("cube.obj");
+    const int width = 500;
+    const int height = 500;
+    Model model("cube.obj");
 
-    // 2. 檢查結果
-    if (m.verts_.empty()) {
-        std::cout << "讀取失敗！" << std::endl;
+    if (model.verts_.empty()) {
+        std::cerr << "讀取失敗！" << std::endl;
+        return 1;
     }
-    else {
-        std::cout << "--- 3D 模型讀取成功 ---" << std::endl;
-        std::cout << "頂點數量: " << m.verts_.size() << std::endl;
-        std::cout << "面數量: " << m.faces_.size() << std::endl;
-        std::cout << "-----------------------" << std::endl;
 
-        // 印出第一個面做測試
-        if (!m.faces_.empty()) {
-            std::cout << "第一個面的頂點索引為: ";
-            for (int i : m.faces_[0]) std::cout << i << " ";
-            std::cout << std::endl;
+    std::vector<unsigned char> framebuffer(width * height * 3, 0);
+
+    // 設定旋轉角度（讓 8 個點不要重疊）
+    float angleX = 0.4f;
+    float angleY = 0.6f;
+
+    for (int i = 0; i < (int)model.verts_.size(); i++) {
+        Vec3f v = model.verts_[i];
+
+        // 1. 繞 Y 軸旋轉
+        float nx = v.x * cos(angleY) + v.z * sin(angleY);
+        float nz = -v.x * sin(angleY) + v.z * cos(angleY);
+
+        // 2. 繞 X 軸旋轉
+        float ny = v.y * cos(angleX) - nz * sin(angleX);
+        float rz = v.y * sin(angleX) + nz * cos(angleX); // 最終旋轉後的 Z（此處投影暫不用）
+
+        // 3. 投影到 2D 平面 (加上放大倍率 zoom)
+        float zoom = 150.0f;
+        int x = (int)(nx * zoom + width / 2.0f);
+        int y = (int)(height / 2.0f - ny * zoom);
+
+        // 4. 畫點 (為了讓點明顯一點，我們畫 3x3 的小方塊代表一個頂點)
+        for (int ox = -1; ox <= 1; ox++) {
+            for (int oy = -1; oy <= 1; oy++) {
+                int px = x + ox;
+                int py = y + oy;
+                if (px >= 0 && px < width && py >= 0 && py < height) {
+                    int idx = (py * width + px) * 3;
+                    framebuffer[idx] = 255; framebuffer[idx + 1] = 255; framebuffer[idx + 2] = 255;
+                }
+            }
         }
     }
 
-    std::cout << "\n按 Enter 鍵結束..." << std::endl;
-    std::cin.get();
+    std::ofstream ofs("result.ppm");
+    ofs << "P3\n" << width << " " << height << "\n255\n";
+    for (int i = 0; i < width * height * 3; i += 3) {
+        ofs << (int)framebuffer[i] << " " << (int)framebuffer[i + 1] << " " << (int)framebuffer[i + 2] << "\n";
+    }
+    ofs.close();
+
+    std::cout << "完成！讀取頂點數: " << model.verts_.size() << std::endl;
+    std::cout << "請打開 result.ppm 查看旋轉後的 8 個頂點。" << std::endl;
+
     return 0;
 }
