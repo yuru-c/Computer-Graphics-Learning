@@ -4,7 +4,7 @@
 #include <fstream>
 #include <sstream>
 #include <algorithm>
-#include <cmath> // 為了 cos 和 sin
+#include <cmath>
 
 // --- 3D 數學結構 ---
 struct Vec3f {
@@ -15,6 +15,8 @@ struct Vec3f {
 class Model {
 public:
     std::vector<Vec3f> verts_;
+    std::vector<std::vector<int>> faces_;
+
     Model(std::string filename) {
         std::ifstream in(filename.c_str());
         if (in.fail()) {
@@ -28,15 +30,54 @@ public:
                 Vec3f v; s >> v.x >> v.y >> v.z;
                 verts_.push_back(v);
             }
+            else if (!line.compare(0, 2, "f ")) {
+                std::vector<int> f;
+                int vertex_index;
+                std::istringstream s(line.substr(2));
+                std::string temp;
+                while (s >> temp) {
+                    // 只抓第一個數字，處理 1/1/1 或 1 這種格式
+                    size_t slash = temp.find('/');
+                    int v_idx = std::stoi(temp.substr(0, slash));
+                    f.push_back(v_idx - 1);
+                }
+                faces_.push_back(f);
+            }
         }
     }
+
     void create_test_cube(std::string filename) {
         std::ofstream out(filename.c_str());
         out << "v -0.5 -0.5 0.5\nv 0.5 -0.5 0.5\nv 0.5 0.5 0.5\nv -0.5 0.5 0.5\n"
             << "v -0.5 -0.5 -0.5\nv 0.5 -0.5 -0.5\nv 0.5 0.5 -0.5\nv -0.5 0.5 -0.5\n";
+        out << "f 1 2 3 4\nf 5 6 7 8\nf 1 2 6 5\nf 2 3 7 6\nf 3 4 8 7\nf 4 1 5 8\n";
         out.close();
     }
 };
+
+// --- 畫線函式 ---
+void line(int x0, int y0, int x1, int y1, std::vector<unsigned char>& framebuffer, int width, int height) {
+    float dx = (float)(x1 - x0);
+    float dy = (float)(y1 - y0);
+    float steps = std::max(std::abs(dx), std::abs(dy));
+    if (steps == 0) return;
+
+    float xInc = dx / steps;
+    float yInc = dy / steps;
+    float x = (float)x0;
+    float y = (float)y0;
+
+    for (int i = 0; i <= (int)steps; i++) {
+        if (x >= 0 && x < width && y >= 0 && y < height) {
+            int idx = ((int)y * width + (int)x) * 3;
+            framebuffer[idx] = 255;
+            framebuffer[idx + 1] = 255;
+            framebuffer[idx + 2] = 255;
+        }
+        x += xInc;
+        y += yInc;
+    }
+}
 
 int main() {
     const int width = 500;
@@ -50,36 +91,33 @@ int main() {
 
     std::vector<unsigned char> framebuffer(width * height * 3, 0);
 
-    // 設定旋轉角度（讓 8 個點不要重疊）
-    float angleX = 0.4f;
-    float angleY = 0.6f;
+    // 旋轉角度
+    float angleX = 0.5f;
+    float angleY = 0.8f;
+    float zoom = 150.0f;
 
-    for (int i = 0; i < (int)model.verts_.size(); i++) {
-        Vec3f v = model.verts_[i];
+    for (int i = 0; i < (int)model.faces_.size(); i++) {
+        const std::vector<int>& face = model.faces_[i];
+        for (int j = 0; j < (int)face.size(); j++) {
+            // 取出 A 點與 B 點
+            Vec3f v0_raw = model.verts_[face[j]];
+            Vec3f v1_raw = model.verts_[face[(j + 1) % face.size()]];
 
-        // 1. 繞 Y 軸旋轉
-        float nx = v.x * cos(angleY) + v.z * sin(angleY);
-        float nz = -v.x * sin(angleY) + v.z * cos(angleY);
+            // 旋轉投影 A 點
+            float nx0 = v0_raw.x * cos(angleY) + v0_raw.z * sin(angleY);
+            float nz0 = -v0_raw.x * sin(angleY) + v0_raw.z * cos(angleY);
+            float ny0 = v0_raw.y * cos(angleX) - nz0 * sin(angleX);
+            int x0 = (int)(nx0 * zoom + width / 2.0f);
+            int y0 = (int)(height / 2.0f - ny0 * zoom);
 
-        // 2. 繞 X 軸旋轉
-        float ny = v.y * cos(angleX) - nz * sin(angleX);
-        float rz = v.y * sin(angleX) + nz * cos(angleX); // 最終旋轉後的 Z（此處投影暫不用）
+            // 旋轉投影 B 點
+            float nx1 = v1_raw.x * cos(angleY) + v1_raw.z * sin(angleY);
+            float nz1 = -v1_raw.x * sin(angleY) + v1_raw.z * cos(angleY);
+            float ny1 = v1_raw.y * cos(angleX) - nz1 * sin(angleX);
+            int x1 = (int)(nx1 * zoom + width / 2.0f);
+            int y1 = (int)(height / 2.0f - ny1 * zoom);
 
-        // 3. 投影到 2D 平面 (加上放大倍率 zoom)
-        float zoom = 150.0f;
-        int x = (int)(nx * zoom + width / 2.0f);
-        int y = (int)(height / 2.0f - ny * zoom);
-
-        // 4. 畫點 (為了讓點明顯一點，我們畫 3x3 的小方塊代表一個頂點)
-        for (int ox = -1; ox <= 1; ox++) {
-            for (int oy = -1; oy <= 1; oy++) {
-                int px = x + ox;
-                int py = y + oy;
-                if (px >= 0 && px < width && py >= 0 && py < height) {
-                    int idx = (py * width + px) * 3;
-                    framebuffer[idx] = 255; framebuffer[idx + 1] = 255; framebuffer[idx + 2] = 255;
-                }
-            }
+            line(x0, y0, x1, y1, framebuffer, width, height);
         }
     }
 
@@ -90,8 +128,6 @@ int main() {
     }
     ofs.close();
 
-    std::cout << "完成！讀取頂點數: " << model.verts_.size() << std::endl;
-    std::cout << "請打開 result.ppm 查看旋轉後的 8 個頂點。" << std::endl;
-
+    std::cout << "完成！請手動刪除舊 cube.obj 後再執行。" << std::endl;
     return 0;
 }
