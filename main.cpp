@@ -3,82 +3,140 @@
 #include <vector>
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 
-// --- 3D 座標點 ---
-struct Vec3f { float x, y, z; };
-
-// --- 簡化版 Model (為了讓你直接跑) ---
-struct SimpleCube {
-    std::vector<Vec3f> verts = {
-        {-0.5,-0.5, 0.5}, {0.5,-0.5, 0.5}, {0.5, 0.5, 0.5}, {-0.5, 0.5, 0.5},
-        {-0.5,-0.5,-0.5}, {0.5,-0.5,-0.5}, {0.5, 0.5,-0.5}, {-0.5, 0.5,-0.5}
-    };
-    std::vector<std::vector<int>> faces = {
-        {0,1,2,3}, {4,5,6,7}, {0,1,5,4}, {2,3,7,6}, {1,2,6,5}, {0,3,7,4}
-    };
+// --- 3D 基礎結構 ---
+struct Vec3f {
+    float x, y, z;
+    Vec3f operator-(const Vec3f& v) const { return { x - v.x, y - v.y, z - v.z }; }
 };
 
-// --- 你之前重構的 transform 函式 ---
-Vec3f transform(Vec3f v, float angleX, float angleY) {
-    float x = v.x, y = v.y, z = v.z;
-    float cY = cos(angleY), sY = sin(angleY);
-    float nx = x * cY + z * sY, nz = -x * sY + z * cY;
-    float cX = cos(angleX), sX = sin(angleX);
-    float ny = y * cX - nz * sX, nz2 = y * sX + nz * cX;
-    return { nx, ny, nz2 };
+struct Point {
+    int x, y;
+};
+
+// --- 向量運算：外積 ---
+Vec3f cross_product(Vec3f a, Vec3f b) {
+    return {
+        a.y * b.z - a.z * b.y,
+        a.z * b.x - a.x * b.z,
+        a.x * b.y - a.y * b.x
+    };
 }
 
-// --- 畫線函式 ---
-void draw_line(int x0, int y0, int x1, int y1, std::vector<unsigned char>& fb, int w, int h) {
-    float dx = (float)(x1 - x0), dy = (float)(y1 - y0);
-    float steps = std::max(std::abs(dx), std::abs(dy));
-    if (steps == 0) return;
-    float xInc = dx / steps, yInc = dy / steps, x = (float)x0, y = (float)y0;
-    for (int i = 0; i <= (int)steps; i++) {
-        if (x >= 0 && x < w && y >= 0 && y < h) {
-            int idx = ((int)y * w + (int)x) * 3;
-            fb[idx] = fb[idx + 1] = fb[idx + 2] = 255; // 畫白色
+// --- 向量運算：正規化 ---
+Vec3f normalize(Vec3f v) {
+    float len = std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+    return (len > 0) ? Vec3f{ v.x / len, v.y / len, v.z / len } : v;
+}
+
+// --- 核心：實體三角形填色函式 (Scanline Fill) ---
+void fill_triangle(Point p0, Point p1, Point p2, std::vector<unsigned char>& fb, int w, int h, unsigned char color) {
+    // 1. 頂點依 Y 座標排序 (p0 最上, p2 最下)
+    if (p0.y > p1.y) std::swap(p0, p1);
+    if (p0.y > p2.y) std::swap(p0, p2);
+    if (p1.y > p2.y) std::swap(p1, p2);
+
+    int total_height = p2.y - p0.y;
+    if (total_height == 0) return;
+
+    for (int i = 0; i < total_height; i++) {
+        bool second_half = i > p1.y - p0.y || p1.y == p0.y;
+        int segment_height = second_half ? p2.y - p1.y : p1.y - p0.y;
+        if (segment_height == 0) continue;
+
+        float alpha = (float)i / total_height;
+        float beta = (float)(i - (second_half ? p1.y - p0.y : 0)) / segment_height;
+
+        // 計算左右兩側的 X 邊界
+        int ax = (int)(p0.x + (p2.x - p0.x) * alpha);
+        int bx = second_half ?
+            (int)(p1.x + (p2.x - p1.x) * beta) :
+            (int)(p0.x + (p1.x - p0.x) * beta);
+
+        if (ax > bx) std::swap(ax, bx);
+
+        // 填滿水平線段
+        int py = p0.y + i;
+        if (py < 0 || py >= h) continue;
+
+        for (int px = ax; px <= bx; px++) {
+            if (px >= 0 && px < w) {
+                int idx = (py * w + px) * 3;
+                fb[idx] = fb[idx + 1] = fb[idx + 2] = color;
+            }
         }
-        x += xInc; y += yInc;
     }
+}
+
+// --- 旋轉轉換 ---
+Vec3f transform(Vec3f v, float angleX, float angleY) {
+    float x = v.x, y = v.y, z = v.z;
+    // Y 軸旋轉
+    float cY = std::cos(angleY), sY = std::sin(angleY);
+    float nx = x * cY + z * sY, nz = -x * sY + z * cY;
+    // X 軸旋轉
+    float cX = std::cos(angleX), sX = std::sin(angleX);
+    float ny = y * cX - nz * sX, nz2 = y * sX + nz * cX;
+    return { nx, ny, nz2 };
 }
 
 int main() {
     const int W = 600, H = 600;
     if (!glfwInit()) return -1;
-    GLFWwindow* window = glfwCreateWindow(W, H, "3D Cube Animation", NULL, NULL);
+
+    GLFWwindow* window = glfwCreateWindow(W, H, "3D Software Renderer - Solid Shading", NULL, NULL);
     if (!window) { glfwTerminate(); return -1; }
     glfwMakeContextCurrent(window);
 
-    SimpleCube cube;
+    // [解決閃爍關鍵] 啟用垂直同步，鎖定 FPS
+    glfwSwapInterval(1);
+
+    // 立方體數據 (12個三角形面)
+    std::vector<Vec3f> verts = {
+        {-0.5,-0.5,0.5}, {0.5,-0.5,0.5}, {0.5,0.5,0.5}, {-0.5,0.5,0.5},
+        {-0.5,-0.5,-0.5}, {0.5,-0.5,-0.5}, {0.5,0.5,-0.5}, {-0.5,0.5,-0.5}
+    };
+    std::vector<std::vector<int>> faces = {
+        {0,1,2}, {0,2,3}, {4,7,6}, {4,6,5}, {0,4,5}, {0,5,1},
+        {1,5,6}, {1,6,2}, {2,6,7}, {2,7,3}, {4,0,3}, {4,3,7}
+    };
+
     std::vector<unsigned char> framebuffer(W * H * 3, 0);
     float angleX = 0.5f, angleY = 0.0f;
 
-    // --- 實時渲染迴圈 ---
     while (!glfwWindowShouldClose(window)) {
-        angleY += 0.015f; // 控制旋轉速度
-        std::fill(framebuffer.begin(), framebuffer.end(), 0); // 每幀清空畫面
+        angleY += 0.015f; // 動畫速度
+        std::memset(framebuffer.data(), 0, framebuffer.size()); // 快速清空背景
 
-        // 1. 幾何階段
-        std::vector<std::pair<int, int>> projected;
-        for (auto& v_raw : cube.verts) {
+        std::vector<Point> projected;
+        std::vector<Vec3f> transformed;
+        for (auto& v_raw : verts) {
             Vec3f v = transform(v_raw, angleX, angleY);
-            // 投影到螢幕座標
+            transformed.push_back(v);
             projected.push_back({ (int)(v.x * 250 + W / 2), (int)(H / 2 - v.y * 250) });
         }
 
-        // 2. 光柵化階段
-        for (auto& face : cube.faces) {
-            for (int j = 0; j < 4; j++) {
-                auto p0 = projected[face[j]];
-                auto p1 = projected[face[(j + 1) % 4]];
-                draw_line(p0.first, p0.second, p1.first, p1.second, framebuffer, W, H);
+        for (auto& f : faces) {
+            Vec3f v0 = transformed[f[0]], v1 = transformed[f[1]], v2 = transformed[f[2]];
+
+            // 1. 計算法向量與背面剔除
+            Vec3f normal = normalize(cross_product(v1 - v0, v2 - v0));
+
+            // 2. 簡單光照 (假設光源在 0, 0, 1)
+            float intensity = normal.z;
+
+            if (intensity > 0) {
+                // 給一點基礎環境光，並放大光照對比度
+                unsigned char c = (unsigned char)(std::min(1.0f, std::max(0.1f, intensity)) * 255);
+                fill_triangle(projected[f[0]], projected[f[1]], projected[f[2]], framebuffer, W, H, c);
             }
         }
 
-        // 3. 將像素矩陣推送到視窗
+        // 繪製到螢幕
         glClear(GL_COLOR_BUFFER_BIT);
         glDrawPixels(W, H, GL_RGB, GL_UNSIGNED_BYTE, framebuffer.data());
+
         glfwSwapBuffers(window);
         glfwPollEvents();
     }
